@@ -69,6 +69,40 @@ export class ApiError extends Error {
   }
 }
 
+/* -------------------------------------------------------------------------- */
+/*                               Token de login                               */
+/* -------------------------------------------------------------------------- */
+
+/** Chave do `localStorage` onde o token de login é guardado. */
+export const TOKEN_STORAGE_KEY = "criafacil_token";
+
+/** Retorna o token salvo, ou `null` (sempre `null` no servidor). */
+export function getToken(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(TOKEN_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** Salva o token no `localStorage`. */
+export function setToken(token: string): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
+}
+
+/** Remove o token do `localStorage`. */
+export function clearToken(): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+}
+
+/** Indica se existe um token salvo (não valida com a API — para isso use `getMe()`). */
+export function isLoggedIn(): boolean {
+  return Boolean(getToken());
+}
+
 function buildUrl(path: string, params?: Record<string, string>): string {
   const url = `${API_URL}/${path.replace(/^\/+/, "")}`;
   if (!params || Object.keys(params).length === 0) return url;
@@ -89,6 +123,11 @@ async function request<T>(
   const headers = new Headers(init.headers);
   headers.set("x-project-key", PROJECT_KEY);
   headers.set("Accept", "application/json");
+  // Anexa o token do usuário logado, se existir (apenas no navegador).
+  const token = getToken();
+  if (token && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
   // Não define Content-Type para FormData: o navegador adiciona o boundary.
   if (init.body && !(init.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
@@ -248,4 +287,96 @@ export async function uploadFile(file: File): Promise<{ url: string }> {
     throw new ApiError(500, "Upload concluído, mas a API não retornou a URL.", body);
   }
   return { url: result.url };
+}
+
+/* -------------------------------------------------------------------------- */
+/*                         Autenticação de usuários                           */
+/* -------------------------------------------------------------------------- */
+/* As rotas de auth NÃO usam o envelope `{ data: ... }`.                      */
+
+/** Usuário retornado pela API de auth. */
+export interface AuthUser {
+  id: number | string;
+  name: string;
+  email: string;
+  [key: string]: unknown;
+}
+
+/** Resposta do login: `{ token, user }`. */
+export interface AuthResponse {
+  token: string;
+  user: AuthUser;
+}
+
+/** Extrai o usuário de respostas como `{ user }`, `{ data }` ou o usuário puro. */
+function extractUser(body: unknown): AuthUser {
+  if (body && typeof body === "object") {
+    if ("user" in body) return (body as { user: AuthUser }).user;
+    if (!("email" in body) && "data" in body) return (body as { data: AuthUser }).data;
+  }
+  return body as AuthUser;
+}
+
+/**
+ * Cadastra um novo usuário. Se a API já devolver um token, ele é salvo
+ * (o usuário fica logado automaticamente).
+ * @example await register({ name: "Maria", email: "maria@email.com", password: "segredo123" });
+ */
+export async function register(input: {
+  name: string;
+  email: string;
+  password: string;
+}): Promise<{ token?: string; user?: AuthUser }> {
+  const body = await request<Record<string, unknown> | null>("auth/register", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  const token = body && typeof body.token === "string" ? body.token : undefined;
+  if (token) setToken(token);
+  return { token, user: body ? extractUser(body) : undefined };
+}
+
+/**
+ * Faz login e salva o token no `localStorage`. A partir daí, todas as funções
+ * deste arquivo enviam `Authorization: Bearer <token>` automaticamente.
+ * @example const { user } = await login("maria@email.com", "segredo123");
+ */
+export async function login(email: string, password: string): Promise<AuthResponse> {
+  clearToken(); // evita enviar um token antigo/expirado no login
+  const body = await request<AuthResponse>("auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  });
+  if (!body?.token) {
+    throw new ApiError(500, "Login concluído, mas a API não retornou o token.", body);
+  }
+  setToken(body.token);
+  return body;
+}
+
+/**
+ * Retorna o usuário logado, ou `null` se não houver login válido.
+ * Se o token estiver expirado/inválido (401), ele é apagado.
+ * @example const user = await getMe(); if (!user) router.push("/login");
+ */
+export async function getMe(): Promise<AuthUser | null> {
+  if (!getToken()) return null;
+  try {
+    const body = await request<unknown>("auth/me", { method: "GET" });
+    return extractUser(body);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) {
+      clearToken();
+      return null;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Sai da conta: remove o token do `localStorage`.
+ * @example logout(); router.push("/login");
+ */
+export function logout(): void {
+  clearToken();
 }

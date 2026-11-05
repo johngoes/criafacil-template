@@ -122,40 +122,43 @@ Todas as chamadas abaixo também enviam o header `x-project-key`, como qualquer 
 > Atenção: as rotas de auth **não** usam o envelope `{ "data": ... }` — o body é enviado
 > exatamente como na tabela acima. O envelope `data` vale para os registros das coleções.
 
-Fluxo recomendado:
-
-1. Após o login, salve o token no `localStorage` (ex.: chave `criafacil_token`).
-2. Anexe `Authorization: Bearer <token>` nas chamadas seguintes quando a rota exigir
-   autenticação (junto com o `x-project-key`).
-3. Ao abrir uma página protegida, chame `GET /auth/me`. Se responder 401, apague o
-   token e mande para a tela de login.
-4. "Sair" = remover o token do `localStorage` e voltar para a tela de login.
-5. `localStorage` só existe no navegador: acesse-o apenas em componentes
-   `"use client"`, dentro de `useEffect` ou de handlers de evento.
+Use **sempre** os helpers de `lib/api.ts` — não chame as rotas de auth com `fetch` manual:
 
 ```ts
-const API_URL = process.env.NEXT_PUBLIC_API_URL;
-const headers = {
-  "Content-Type": "application/json",
-  Accept: "application/json",
-  "x-project-key": process.env.NEXT_PUBLIC_PROJECT_KEY ?? "",
-};
+import { register, login, getMe, logout, isLoggedIn } from "@/lib/api";
 
-// Login
-const res = await fetch(`${API_URL}/auth/login`, {
-  method: "POST",
-  headers,
-  body: JSON.stringify({ email, password }),
-});
-if (!res.ok) throw new Error("E-mail ou senha inválidos");
-const { token, user } = await res.json();
-localStorage.setItem("criafacil_token", token);
+// Cadastro (se a API devolver token, o usuário já fica logado)
+await register({ name, email, password });
 
-// Usuário logado
-const me = await fetch(`${API_URL}/auth/me`, {
-  headers: { ...headers, Authorization: `Bearer ${localStorage.getItem("criafacil_token")}` },
-});
+// Login: salva o token no localStorage (chave "criafacil_token")
+const { user } = await login(email, password);
+
+// Usuário logado: retorna o usuário, ou null se não houver login válido
+// (token expirado/inválido é apagado automaticamente)
+const me = await getMe();
+if (!me) router.push("/login");
+
+// Sair: remove o token
+logout();
+router.push("/login");
 ```
+
+Como funciona:
+
+- **Token automático:** depois do `login()`, **todas** as funções de `lib/api.ts`
+  (`getRecords`, `createRecord`, `updateRecord`, `updateItem`, `deleteRecord`,
+  `uploadFile`, `getMe`) enviam `Authorization: Bearer <token>` sozinhas, junto com o
+  `x-project-key`. Não adicione esse header manualmente.
+- **Proteger uma página:** em um componente `"use client"`, chame `getMe()` dentro de um
+  `useEffect`; mostre "carregando" enquanto verifica e redirecione para `/login` se
+  retornar `null`.
+- **Erros:** `login()`/`register()` lançam `ApiError` em caso de falha (ex.: status 401
+  ou 422). Mostre mensagens amigáveis, nunca o erro técnico.
+- `isLoggedIn()` só verifica se existe token salvo (rápido, sem chamar a API). Para ter
+  certeza de que o login é válido, use `getMe()`.
+- `localStorage` só existe no navegador: use os helpers de auth apenas em componentes
+  `"use client"`, dentro de `useEffect` ou de handlers de evento. No servidor, o token
+  nunca é enviado.
 
 Telas de login/cadastro: simples, mobile-first, com mensagens de erro amigáveis
 (ex.: "E-mail ou senha incorretos", "Este e-mail já está cadastrado").
