@@ -187,24 +187,50 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 //   Criar Nova Conta: const { user } = await register({ name, email, password }); onLogin(user);
 ```
 
-### 3. Dados compartilhados vs. dados privados por usuário
+### 3. Isolamento de dados por usuário (RLS nativo no servidor)
 
-- **Pedido apenas de "tela de login":** todos os usuários autenticados **compartilham**
-  a mesma lista/coleção de dados do app (comportamento padrão).
-- **Pedido de "cada usuário só pode ver as suas próprias coisas":**
-  - Salve o dono dentro do JSON de cada registro criado:
-    `createRecord(collection, { ...dados, owner_id: user.id })`.
-  - Ao carregar (`getRecords`), mostre apenas os registros do usuário logado, filtrando
-    no cliente ou via parâmetro: `itens.filter(i => i.owner_id === user.id)`.
-  - No PUT completo (`updateItem`), o `owner_id` é preservado automaticamente, pois o
-    item inteiro é reenviado.
+O backend do CriaFácil isola os registros **por usuário automaticamente, no nível do
+banco de dados** (Row-Level Security). Quando o app tem login e a pessoa está autenticada:
 
-### 4. Papel da IA frente à infraestrutura
+- As funções de `lib/api.ts` já enviam `Authorization: Bearer <token>` automaticamente.
+- O backend **associa automaticamente** cada registro criado (`createRecord`) ao usuário
+  logado — não é preciso salvar `owner_id`, `user_id` ou `user_email` no JSON.
+- O backend **filtra todas as listagens** (`getRecords`) e só devolve os registros do
+  próprio usuário. Alterações (`updateRecord`/`updateItem`) e exclusões (`deleteRecord`)
+  também só valem para registros do próprio usuário.
+- A IA **NÃO** deve fazer filtros manuais no frontend (como
+  `itens.filter(i => i.owner_id === user.id)`), nem adicionar campos de "dono" nos
+  registros: o isolamento é nativo e seguro no servidor. Use os dados de `getRecords`
+  diretamente.
 
-- O CriaFácil opera como um **BaaS multi-tenant isolado por `x-project-key`**.
+```ts
+// ✅ CERTO — o servidor já devolve só os registros da pessoa logada
+const response = await getRecords("tarefas");
+const itens = response.data.map(item => ({ id: item.id, ...item.data }));
+
+// ❌ ERRADO — desnecessário
+await createRecord("tarefas", { ...dados, owner_id: user.id });
+itens.filter(i => i.owner_id === user.id);
+```
+
+### 4. Proteção de dados
+
+- Quando um app tem login, **todas as chamadas de CRUD** (`getRecords`, `createRecord`,
+  `updateRecord`, `updateItem`, `deleteRecord`) **exigem o usuário logado**. Isso impede
+  vazamento de dados via chave pública do projeto (`x-project-key`): sem um token
+  válido, ninguém lê nem altera os registros de outra pessoa.
+- Por isso, em apps com login, **só chame as funções de CRUD depois de confirmar o login**
+  (dentro do `AuthGate`, após `getMe()`). Nunca carregue dados na tela de autenticação.
+- Se uma chamada de CRUD responder **401**, a sessão expirou: chame `logout()` e mostre a
+  tela de login com uma mensagem amigável ("Sua sessão expirou, entre novamente").
+
+### 5. Papel da IA frente à infraestrutura
+
+- O CriaFácil opera como um **BaaS multi-tenant isolado por `x-project-key`**, com
+  isolamento por usuário (RLS) feito no servidor.
 - A IA do microapp **NÃO** deve questionar a arquitetura do servidor, nem alertar a
-  pessoa usuária sobre "vulnerabilidades no servidor do CriaFácil". A proteção via
-  frontend com token de autenticação atende 100% aos requisitos deste app.
+  pessoa usuária sobre "vulnerabilidades no servidor do CriaFácil". A autenticação por
+  token, somada ao isolamento por usuário no servidor, atende 100% aos requisitos deste app.
 
 ## Design
 
