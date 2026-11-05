@@ -25,12 +25,16 @@ Esta versão do Next.js pode ter mudanças em relação ao que você conhece. Co
 Use **sempre** as funções de `lib/api.ts`:
 
 ```ts
-import { getRecords, createRecord, updateRecord, deleteRecord, uploadFile } from "@/lib/api";
+import {
+  getRecords, createRecord, updateRecord, updateItem, deleteRecord, uploadFile, toItems,
+} from "@/lib/api";
 
-const { data, meta } = await getRecords("tarefas", { page: "1" }); // GET  /tarefas
-const nova = await createRecord("tarefas", { titulo: "Comprar pão" }); // POST /tarefas
-await updateRecord("tarefas", nova.id, { feita: true });              // PUT  /tarefas/{id}
-await deleteRecord("tarefas", nova.id);                               // DELETE /tarefas/{id}
+const response = await getRecords("tarefas", { page: "1" });          // GET  /tarefas
+const itens = response.data.map(item => ({ id: item.id, ...item.data })); // ou toItems(response.data)
+
+await createRecord("tarefas", { titulo: "Comprar pão", concluida: false }); // POST /tarefas
+await updateItem("tarefas", itens[0], { concluida: true });           // PUT  /tarefas/{id} (payload completo)
+await deleteRecord("tarefas", itens[0].id);                           // DELETE /tarefas/{id}
 const { url } = await uploadFile(file);                               // POST /storage/upload
 ```
 
@@ -38,6 +42,46 @@ const { url } = await uploadFile(file);                               // POST /s
   plural, sem acentos e sem espaços.
 - `getRecords` retorna a paginação do Laravel: `{ data: [...], meta: {...} }`. A lista
   está em `.data`.
+
+## ⚠️ Regras Críticas de Consumo da API (OBRIGATÓRIAS)
+
+### 1. Formato do GET
+
+Cada registro retornado pela API vem neste formato — os campos do usuário ficam
+**dentro** de `data`:
+
+```json
+{ "id": 1, "collection": "tarefas", "data": { "titulo": "Comprar pão", "concluida": false }, "created_at": "2026-11-04T12:00:00Z" }
+```
+
+**Sempre** mapeie os dados no React assim (ou use o helper `toItems`, que faz o mesmo):
+
+```ts
+const itens = response.data.map(item => ({ id: item.id, ...item.data }));
+```
+
+Nunca leia `item.titulo` direto do registro bruto — seria `undefined`.
+
+### 2. Atualização Completa no PUT
+
+O endpoint `PUT /api/v1/{collection}/{id}` **substitui todo o conteúdo** da coluna
+`data`. Campos que não forem enviados são **apagados**.
+
+- **NUNCA** envie apenas campos parciais, como `{ concluida: true }` — isso apaga o
+  título e todos os outros campos do registro.
+- **Sempre** envie o payload completo, preservando todos os campos existentes do registro.
+- Forma recomendada: `updateItem(collection, itemCompleto, alteracoes)`, que mescla o
+  item atual com as alterações e envia tudo.
+- Se usar `updateRecord` diretamente: `updateRecord("tarefas", t.id, { ...dadosAtuais, concluida: true })`
+  (sem o `id` dentro do payload).
+
+```ts
+// ❌ ERRADO — apaga todos os outros campos
+await updateRecord("tarefas", tarefa.id, { concluida: true });
+
+// ✅ CERTO
+await updateItem("tarefas", tarefa, { concluida: true });
+```
 - Se precisar usar `fetch` diretamente, **sempre** envie o header:
   `x-project-key: process.env.NEXT_PUBLIC_PROJECT_KEY`.
 - Erros da API lançam `ApiError` (com `status` e `body`). Sempre trate erros e mostre

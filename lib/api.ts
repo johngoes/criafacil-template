@@ -26,8 +26,35 @@ export interface PaginatedResponse<T> {
   links?: Record<string, string | null>;
 }
 
-/** Registro genérico retornado pela API (sempre possui `id`). */
-export type ApiRecord<T = Record<string, unknown>> = T & { id: string | number };
+/**
+ * Registro como vem da API. Os campos do usuário ficam DENTRO de `data`:
+ * `{ id, collection, data: { ... }, created_at }`.
+ */
+export interface ApiRecord<T = Record<string, unknown>> {
+  id: number;
+  collection: string;
+  data: T;
+  created_at: string;
+  updated_at?: string;
+}
+
+/** Registro "achatado" para uso no React: `{ id, ...data }`. */
+export type Item<T = Record<string, unknown>> = T & { id: number };
+
+/**
+ * Converte um registro da API em item achatado: `{ id: item.id, ...item.data }`.
+ */
+export function toItem<T = Record<string, unknown>>(record: ApiRecord<T>): Item<T> {
+  return { ...record.data, id: record.id };
+}
+
+/**
+ * Converte a lista de registros da API em itens achatados.
+ * @example const itens = toItems(response.data);
+ */
+export function toItems<T = Record<string, unknown>>(records: ApiRecord<T>[]): Item<T>[] {
+  return records.map((record) => toItem(record));
+}
 
 /** Erro lançado quando a API responde com status fora de 2xx. */
 export class ApiError extends Error {
@@ -103,9 +130,24 @@ function unwrap<T>(body: unknown): T {
 }
 
 /**
+ * Extrai o registro de uma resposta de item único. Aceita tanto o registro puro
+ * `{ id, collection, data }` quanto o envelope de Resource `{ data: { id, ... } }`.
+ * (Não usa `unwrap`, pois o próprio registro tem uma chave `data`.)
+ */
+function unwrapRecord<T>(body: unknown): ApiRecord<T> {
+  if (body && typeof body === "object" && !("id" in body) && "data" in body) {
+    return (body as { data: ApiRecord<T> }).data;
+  }
+  return body as ApiRecord<T>;
+}
+
+/**
  * Lista registros de uma coleção.
- * Retorna `{ data, meta }` (paginação do Laravel).
- * @example const { data } = await getRecords("tarefas", { page: "2" });
+ * Retorna `{ data, meta }` (paginação do Laravel). Cada registro vem como
+ * `{ id, collection, data: { ... }, created_at }` — use `toItems()` para achatar.
+ * @example
+ * const response = await getRecords("tarefas", { page: "2" });
+ * const itens = response.data.map(item => ({ id: item.id, ...item.data }));
  */
 export async function getRecords<T = Record<string, unknown>>(
   collection: string,
@@ -133,17 +175,20 @@ export async function createRecord<T = Record<string, unknown>>(
     method: "POST",
     body: JSON.stringify({ data: payload }),
   });
-  return unwrap<ApiRecord<T>>(body);
+  return unwrapRecord<T>(body);
 }
 
 /**
- * Atualiza um registro. O payload é enviado como `{ data: payload }`.
- * @example await updateRecord("tarefas", 1, { feita: true });
+ * Substitui TODO o conteúdo de um registro. O payload é enviado como `{ data: payload }`.
+ *
+ * ⚠️ O PUT sobrescreve a coluna `data` inteira: campos ausentes no payload são APAGADOS.
+ * Envie sempre o objeto completo. Para alterar só alguns campos, use `updateItem()`.
+ * @example await updateRecord("tarefas", 1, { ...tarefaCompleta, concluida: true });
  */
 export async function updateRecord<T = Record<string, unknown>>(
   collection: string,
   id: string | number,
-  payload: object,
+  payload: T,
 ): Promise<ApiRecord<T>> {
   const body = await request<unknown>(
     `${collection}/${encodeURIComponent(String(id))}`,
@@ -152,7 +197,25 @@ export async function updateRecord<T = Record<string, unknown>>(
       body: JSON.stringify({ data: payload }),
     },
   );
-  return unwrap<ApiRecord<T>>(body);
+  return unwrapRecord<T>(body);
+}
+
+/**
+ * Forma SEGURA de alterar campos de um item: mescla o item atual completo
+ * (achatado, com `id`) com as alterações e envia o payload inteiro no PUT,
+ * preservando todos os campos existentes.
+ * @example
+ * await updateItem("tarefas", tarefa, { concluida: true });
+ */
+export async function updateItem<T extends Record<string, unknown>>(
+  collection: string,
+  item: Item<T>,
+  changes: Partial<T>,
+): Promise<Item<T>> {
+  const { id, ...current } = item;
+  const payload = { ...current, ...changes } as unknown as T;
+  const record = await updateRecord<T>(collection, id, payload);
+  return record && record.data ? toItem(record) : ({ ...payload, id } as Item<T>);
 }
 
 /**
