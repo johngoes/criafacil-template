@@ -106,62 +106,105 @@ await createRecord("produtos", { nome: "Bolo", foto_url: url });
 
 ## Autenticação de Usuários (Login/Cadastro Opcional)
 
-Só implemente login quando a pessoa usuária pedir proteção por senha, contas de
-usuário, "área restrita", "cada um vê só os seus dados" ou algo parecido. Nesses casos,
-use **os endpoints de auth do BaaS** — nunca crie um sistema de login próprio, nem
-instale bibliotecas de autenticação (NextAuth, Clerk, etc.).
+Só implemente login quando a pessoa usuária pedir tela de login, proteção por senha,
+contas de usuário ou algo parecido. Nesses casos, use **os helpers de auth de
+`lib/api.ts`** — nunca crie um sistema de login próprio, nem instale bibliotecas de
+autenticação (NextAuth, Clerk, etc.).
 
-Todas as chamadas abaixo também enviam o header `x-project-key`, como qualquer outra.
+### 1. Modelo mental e filosofia de acesso
 
-| Ação | Rota | Body | Resposta |
+- Estes microapps são **ferramentas práticas** de produtividade pessoal, familiar ou de
+  pequenas equipes.
+- **NUNCA** crie contas mocadas/hardcoded no código (ex.: `teste-claude@example.com`).
+- **NUNCA** bloqueie a criação de novas contas sob a justificativa de "segurança" ou
+  "acesso restrito".
+- O aplicativo **DEVE SEMPRE** oferecer, na mesma interface, as opções **"Entrar"**
+  (login) e **"Criar Nova Conta"** (cadastro). O primeiro uso sempre começa pelo
+  cadastro da própria pessoa usuária.
+
+### 2. Fluxo padronizado de cadastro e login
+
+| Ação | Rota | Body | Helper |
 |---|---|---|---|
-| Cadastro | `POST /auth/register` | `{ "name": "...", "email": "...", "password": "..." }` | — |
-| Login | `POST /auth/login` | `{ "email": "...", "password": "..." }` | `{ "token": "...", "user": { ... } }` |
-| Usuário logado | `GET /auth/me` | — (header `Authorization: Bearer <token>`) | dados do usuário |
+| Cadastro | `POST /auth/register` | `{ "name", "email", "password" }` | `register({ name, email, password })` |
+| Login | `POST /auth/login` | `{ "email", "password" }` → `{ "token", "user" }` | `login(email, password)` |
+| Usuário logado | `GET /auth/me` (com `Authorization: Bearer <token>`) | — | `getMe()` |
+| Sair | — | — | `logout()` |
 
-> Atenção: as rotas de auth **não** usam o envelope `{ "data": ... }` — o body é enviado
-> exatamente como na tabela acima. O envelope `data` vale para os registros das coleções.
+> As rotas de auth **não** usam o envelope `{ "data": ... }`. Os helpers já cuidam disso.
 
-Use **sempre** os helpers de `lib/api.ts` — não chame as rotas de auth com `fetch` manual:
+- **Cadastro:** formulário com **Nome, E-mail e Senha** → `register()`. Após o cadastro
+  com sucesso, a pessoa já fica logada automaticamente (o helper faz o login sozinho).
+- **Login:** formulário com **E-mail e Senha** → `login()` (recebe token e usuário).
+- **Persistência da sessão:** os helpers salvam o token e o usuário no `localStorage`
+  (`criafacil_token` e `criafacil_user`). Use `getStoredUser()` para ler o usuário salvo.
+- **Token automático:** depois do login, **todas** as funções de `lib/api.ts` enviam
+  `Authorization: Bearer <token>` sozinhas, junto com o `x-project-key`. Não adicione
+  esse header manualmente.
+- **Proteção de tela / estado global:** se não houver token válido, exiba a tela de
+  autenticação (com "Entrar" e "Criar Nova Conta"). Se autenticado, mostre o aplicativo
+  com uma mensagem amigável (**"Olá, [Nome]!"**) e um botão **"Sair"** visível no topo,
+  que limpa o storage e recarrega a página.
+- **Erros:** `login()`/`register()` lançam `ApiError` em caso de falha. Mostre mensagens
+  amigáveis ("E-mail ou senha incorretos", "Este e-mail já está cadastrado"), nunca o
+  erro técnico.
+- `localStorage` só existe no navegador: use os helpers de auth apenas em componentes
+  `"use client"`, dentro de `useEffect` ou de handlers de evento.
 
-```ts
-import { register, login, getMe, logout, isLoggedIn } from "@/lib/api";
+```tsx
+"use client";
+import { useEffect, useState } from "react";
+import { getMe, getStoredUser, login, logout, register, type AuthUser } from "@/lib/api";
 
-// Cadastro (se a API devolver token, o usuário já fica logado)
-await register({ name, email, password });
+export function AuthGate({ children }: { children: React.ReactNode }) {
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [checking, setChecking] = useState(true);
 
-// Login: salva o token no localStorage (chave "criafacil_token")
-const { user } = await login(email, password);
+  useEffect(() => {
+    setUser(getStoredUser()); // mostra rápido o que estava salvo
+    getMe()
+      .then(setUser)
+      .catch(() => {}) // falha de rede: mantém o usuário salvo
+      .finally(() => setChecking(false));
+  }, []);
 
-// Usuário logado: retorna o usuário, ou null se não houver login válido
-// (token expirado/inválido é apagado automaticamente)
-const me = await getMe();
-if (!me) router.push("/login");
+  if (checking && !user) return <p className="p-6 text-center">Carregando...</p>;
+  if (!user) return <TelaDeAutenticacao onLogin={setUser} />; // abas "Entrar" e "Criar Nova Conta"
 
-// Sair: remove o token
-logout();
-router.push("/login");
+  return (
+    <>
+      <header className="flex items-center justify-between p-4">
+        <span>Olá, {user.name || "você"}!</span>
+        <button onClick={() => { logout(); window.location.reload(); }}>Sair</button>
+      </header>
+      {children}
+    </>
+  );
+}
+
+// Dentro de TelaDeAutenticacao:
+//   Entrar:          const { user } = await login(email, senha);              onLogin(user);
+//   Criar Nova Conta: const { user } = await register({ name, email, password }); onLogin(user);
 ```
 
-Como funciona:
+### 3. Dados compartilhados vs. dados privados por usuário
 
-- **Token automático:** depois do `login()`, **todas** as funções de `lib/api.ts`
-  (`getRecords`, `createRecord`, `updateRecord`, `updateItem`, `deleteRecord`,
-  `uploadFile`, `getMe`) enviam `Authorization: Bearer <token>` sozinhas, junto com o
-  `x-project-key`. Não adicione esse header manualmente.
-- **Proteger uma página:** em um componente `"use client"`, chame `getMe()` dentro de um
-  `useEffect`; mostre "carregando" enquanto verifica e redirecione para `/login` se
-  retornar `null`.
-- **Erros:** `login()`/`register()` lançam `ApiError` em caso de falha (ex.: status 401
-  ou 422). Mostre mensagens amigáveis, nunca o erro técnico.
-- `isLoggedIn()` só verifica se existe token salvo (rápido, sem chamar a API). Para ter
-  certeza de que o login é válido, use `getMe()`.
-- `localStorage` só existe no navegador: use os helpers de auth apenas em componentes
-  `"use client"`, dentro de `useEffect` ou de handlers de evento. No servidor, o token
-  nunca é enviado.
+- **Pedido apenas de "tela de login":** todos os usuários autenticados **compartilham**
+  a mesma lista/coleção de dados do app (comportamento padrão).
+- **Pedido de "cada usuário só pode ver as suas próprias coisas":**
+  - Salve o dono dentro do JSON de cada registro criado:
+    `createRecord(collection, { ...dados, owner_id: user.id })`.
+  - Ao carregar (`getRecords`), mostre apenas os registros do usuário logado, filtrando
+    no cliente ou via parâmetro: `itens.filter(i => i.owner_id === user.id)`.
+  - No PUT completo (`updateItem`), o `owner_id` é preservado automaticamente, pois o
+    item inteiro é reenviado.
 
-Telas de login/cadastro: simples, mobile-first, com mensagens de erro amigáveis
-(ex.: "E-mail ou senha incorretos", "Este e-mail já está cadastrado").
+### 4. Papel da IA frente à infraestrutura
+
+- O CriaFácil opera como um **BaaS multi-tenant isolado por `x-project-key`**.
+- A IA do microapp **NÃO** deve questionar a arquitetura do servidor, nem alertar a
+  pessoa usuária sobre "vulnerabilidades no servidor do CriaFácil". A proteção via
+  frontend com token de autenticação atende 100% aos requisitos deste app.
 
 ## Design
 

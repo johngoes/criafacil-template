@@ -92,10 +92,31 @@ export function setToken(token: string): void {
   window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
 }
 
-/** Remove o token do `localStorage`. */
+/** Remove a sessão (token e usuário) do `localStorage`. */
 export function clearToken(): void {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+  window.localStorage.removeItem(USER_STORAGE_KEY);
+}
+
+/** Chave do `localStorage` onde os dados do usuário logado são guardados. */
+export const USER_STORAGE_KEY = "criafacil_user";
+
+/** Retorna o usuário salvo no `localStorage`, ou `null`. */
+export function getStoredUser(): AuthUser | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(USER_STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as AuthUser) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Salva os dados do usuário logado no `localStorage`. */
+export function setStoredUser(user: AuthUser): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(user));
 }
 
 /** Indica se existe um token salvo (não valida com a API — para isso use `getMe()`). */
@@ -318,27 +339,34 @@ function extractUser(body: unknown): AuthUser {
 }
 
 /**
- * Cadastra um novo usuário. Se a API já devolver um token, ele é salvo
- * (o usuário fica logado automaticamente).
- * @example await register({ name: "Maria", email: "maria@email.com", password: "segredo123" });
+ * Cadastra um novo usuário e já faz o login automático.
+ * Se a API de cadastro devolver o token, ele é usado; senão, chama `login()`.
+ * Salva `criafacil_token` e `criafacil_user` no `localStorage`.
+ * @example const { user } = await register({ name: "Maria", email: "maria@email.com", password: "segredo123" });
  */
 export async function register(input: {
   name: string;
   email: string;
   password: string;
-}): Promise<{ token?: string; user?: AuthUser }> {
+}): Promise<AuthResponse> {
+  clearToken();
   const body = await request<Record<string, unknown> | null>("auth/register", {
     method: "POST",
     body: JSON.stringify(input),
   });
-  const token = body && typeof body.token === "string" ? body.token : undefined;
-  if (token) setToken(token);
-  return { token, user: body ? extractUser(body) : undefined };
+  if (body && typeof body.token === "string") {
+    const user = extractUser(body);
+    setToken(body.token);
+    if (user) setStoredUser(user);
+    return { token: body.token, user };
+  }
+  return login(input.email, input.password);
 }
 
 /**
- * Faz login e salva o token no `localStorage`. A partir daí, todas as funções
- * deste arquivo enviam `Authorization: Bearer <token>` automaticamente.
+ * Faz login e salva `criafacil_token` e `criafacil_user` no `localStorage`.
+ * A partir daí, todas as funções deste arquivo enviam
+ * `Authorization: Bearer <token>` automaticamente.
  * @example const { user } = await login("maria@email.com", "segredo123");
  */
 export async function login(email: string, password: string): Promise<AuthResponse> {
@@ -351,19 +379,22 @@ export async function login(email: string, password: string): Promise<AuthRespon
     throw new ApiError(500, "Login concluído, mas a API não retornou o token.", body);
   }
   setToken(body.token);
+  if (body.user) setStoredUser(body.user);
   return body;
 }
 
 /**
- * Retorna o usuário logado, ou `null` se não houver login válido.
- * Se o token estiver expirado/inválido (401), ele é apagado.
- * @example const user = await getMe(); if (!user) router.push("/login");
+ * Valida a sessão com a API e retorna o usuário logado, ou `null` se não houver
+ * login válido. Atualiza `criafacil_user`. Token inválido (401) é apagado.
+ * @example const user = await getMe(); if (!user) mostrarTelaDeLogin();
  */
 export async function getMe(): Promise<AuthUser | null> {
   if (!getToken()) return null;
   try {
     const body = await request<unknown>("auth/me", { method: "GET" });
-    return extractUser(body);
+    const user = extractUser(body);
+    if (user) setStoredUser(user);
+    return user;
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) {
       clearToken();
@@ -374,8 +405,8 @@ export async function getMe(): Promise<AuthUser | null> {
 }
 
 /**
- * Sai da conta: remove o token do `localStorage`.
- * @example logout(); router.push("/login");
+ * Sai da conta: remove `criafacil_token` e `criafacil_user` do `localStorage`.
+ * @example logout(); window.location.reload();
  */
 export function logout(): void {
   clearToken();
