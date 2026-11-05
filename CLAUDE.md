@@ -104,6 +104,62 @@ const { url } = await uploadFile(file);
 await createRecord("produtos", { nome: "Bolo", foto_url: url });
 ```
 
+## Autenticação de Usuários (Login/Cadastro Opcional)
+
+Só implemente login quando a pessoa usuária pedir proteção por senha, contas de
+usuário, "área restrita", "cada um vê só os seus dados" ou algo parecido. Nesses casos,
+use **os endpoints de auth do BaaS** — nunca crie um sistema de login próprio, nem
+instale bibliotecas de autenticação (NextAuth, Clerk, etc.).
+
+Todas as chamadas abaixo também enviam o header `x-project-key`, como qualquer outra.
+
+| Ação | Rota | Body | Resposta |
+|---|---|---|---|
+| Cadastro | `POST /auth/register` | `{ "name": "...", "email": "...", "password": "..." }` | — |
+| Login | `POST /auth/login` | `{ "email": "...", "password": "..." }` | `{ "token": "...", "user": { ... } }` |
+| Usuário logado | `GET /auth/me` | — (header `Authorization: Bearer <token>`) | dados do usuário |
+
+> Atenção: as rotas de auth **não** usam o envelope `{ "data": ... }` — o body é enviado
+> exatamente como na tabela acima. O envelope `data` vale para os registros das coleções.
+
+Fluxo recomendado:
+
+1. Após o login, salve o token no `localStorage` (ex.: chave `criafacil_token`).
+2. Anexe `Authorization: Bearer <token>` nas chamadas seguintes quando a rota exigir
+   autenticação (junto com o `x-project-key`).
+3. Ao abrir uma página protegida, chame `GET /auth/me`. Se responder 401, apague o
+   token e mande para a tela de login.
+4. "Sair" = remover o token do `localStorage` e voltar para a tela de login.
+5. `localStorage` só existe no navegador: acesse-o apenas em componentes
+   `"use client"`, dentro de `useEffect` ou de handlers de evento.
+
+```ts
+const API_URL = process.env.NEXT_PUBLIC_API_URL;
+const headers = {
+  "Content-Type": "application/json",
+  Accept: "application/json",
+  "x-project-key": process.env.NEXT_PUBLIC_PROJECT_KEY ?? "",
+};
+
+// Login
+const res = await fetch(`${API_URL}/auth/login`, {
+  method: "POST",
+  headers,
+  body: JSON.stringify({ email, password }),
+});
+if (!res.ok) throw new Error("E-mail ou senha inválidos");
+const { token, user } = await res.json();
+localStorage.setItem("criafacil_token", token);
+
+// Usuário logado
+const me = await fetch(`${API_URL}/auth/me`, {
+  headers: { ...headers, Authorization: `Bearer ${localStorage.getItem("criafacil_token")}` },
+});
+```
+
+Telas de login/cadastro: simples, mobile-first, com mensagens de erro amigáveis
+(ex.: "E-mail ou senha incorretos", "Este e-mail já está cadastrado").
+
 ## Design
 
 - **Mobile-first:** a maioria das pessoas vai usar no celular. Comece pelo layout
@@ -113,8 +169,31 @@ await createRecord("produtos", { nome: "Bolo", foto_url: url });
 - Ícones: `lucide-react` (já instalado). Para combinar classes: `clsx` e `tailwind-merge`.
 - Sempre mostre estados de carregando, vazio e erro.
 - Componentes que usam estado, eventos ou `fetch` no navegador precisam de `"use client"`.
+- **Resiliência de dados:** sempre adicione fallbacks caso algum campo salvo venha vazio
+  ou nulo de versões anteriores (ex: `item.titulo || 'Item sem nome'`). Registros antigos
+  podem não ter campos que foram adicionados depois — a tela nunca deve quebrar por isso.
 
 ## Automação de Git (deploy)
+
+### Linguagem com a pessoa usuária
+
+**NUNCA** mencione termos como "Git", "git push", "commit", "repositório" ou "Vercel"
+nas suas conversas com o usuário. Trate o processo como uma atualização automática do
+aplicativo (exemplo: "Pronto! Já apliquei as alterações e elas estarão disponíveis no
+seu aplicativo em instantes").
+
+### Identidade do Git
+
+Antes do primeiro commit, verifique `git config user.name` e `git config user.email`.
+Se algum estiver vazio, defina **silenciosamente**, sem perguntar à pessoa usuária,
+apenas neste projeto (sem `--global`):
+
+```bash
+git config user.name  >/dev/null || git config user.name  "CriaFácil"
+git config user.email >/dev/null || git config user.email "app@criafacil.local"
+```
+
+### Fluxo
 
 Sempre que concluir ou testar uma funcionalidade pedida pela pessoa usuária:
 
@@ -124,6 +203,7 @@ Sempre que concluir ou testar uma funcionalidade pedida pela pessoa usuária:
    - `fix: corrige envio de foto do produto`
    - `style: melhora layout da tela inicial no celular`
 3. Execute `git push origin main` para disparar o deploy automático na Vercel.
-4. Avise a pessoa, em linguagem simples, que a atualização foi publicada.
+4. Avise a pessoa, em linguagem simples e sem termos técnicos, que a atualização foi
+   aplicada (veja "Linguagem com a pessoa usuária" acima).
 
 Nunca faça commit de `.env.local` nem de segredos.
