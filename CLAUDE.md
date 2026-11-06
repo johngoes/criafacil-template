@@ -43,6 +43,57 @@ const { url } = await uploadFile(file);                               // POST /s
 - `getRecords` retorna a paginação do Laravel: `{ data: [...], meta: {...} }`. A lista
   está em `.data`.
 
+### Visibilidade dos registros (`visibility`)
+
+Cada registro pode ter a chave `visibility` junto com os outros campos do objeto
+enviado a `createRecord`/`updateRecord`/`updateItem`. O servidor reconhece três valores:
+
+| `visibility` | Quem consegue **ver** (`getRecords`) | Quem pode **editar/excluir** |
+|---|---|---|
+| `"private"` (padrão) | Só o autor | Só o autor |
+| `"friends"` | O autor e quem tem amizade **aceita** com ele | Só o autor |
+| `"public"` | Qualquer pessoa logada no app | Só o autor |
+
+- **Padrão:** se `visibility` não for enviada, o registro é **privado**.
+- **Recursos sociais/compartilhados** (rankings, placares, duelos, desafios públicos,
+  feed compartilhado, murais, recados): use `"visibility": "public"`.
+- **Recursos só para amigos** (fotos para amigos, metas compartilhadas com amigos etc.):
+  use `"visibility": "friends"` (veja "Conexões e Sistema de Amigos" abaixo).
+- A autoria continua protegida: mesmo em registros públicos ou de amigos, só quem criou
+  consegue alterar ou excluir. Se a pessoa tentar mexer no registro de outra, o servidor
+  recusa: trate o erro com uma mensagem amigável ("Só quem criou pode alterar isto").
+- Como o PUT substitui tudo, a `visibility` também precisa ir no payload completo das
+  atualizações. `updateItem` já preserva isso automaticamente (ela vem dentro de `data`).
+
+```ts
+// Ranking visível para todas as pessoas do app
+await createRecord("placar", { nome: user.name, pontos: 120, visibility: "public" });
+
+// Post visível só para amigos
+await createRecord("posts", { texto: "Bom dia!", visibility: "friends" });
+
+// Ranking: o servidor devolve os registros públicos; a ordenação é feita no front-end
+const placar = toItems((await getRecords("placar")).data)
+  .sort((a, b) => (Number(b.pontos) || 0) - (Number(a.pontos) || 0));
+```
+
+## Conexões e Sistema de Amigos (`friendships`)
+
+`friendships` é uma **coleção reservada** do backend para amizades. Use sempre as mesmas
+funções de `lib/api.ts`, com estes campos:
+
+| Ação | Chamada |
+|---|---|
+| Enviar pedido de amizade | `createRecord("friendships", { friend_id: idDoAmigo, status: "pending" })` |
+| Aceitar pedido de amizade | `updateRecord("friendships", conviteId, { friend_id: idDoAmigo, status: "accepted" })` |
+| Listar amizades/pedidos | `getRecords("friendships")` |
+
+- `friend_id` é o `id` do usuário (o mesmo `id` de `AuthUser`) da outra pessoa.
+- O backend reconhece automaticamente as amizades com `status: "accepted"` e libera, para
+  essas pessoas, a leitura dos registros marcados com `visibility: "friends"`.
+- Lembre da regra do PUT completo: ao aceitar, envie `friend_id` **e** `status` juntos.
+- Mostre estados amigáveis na tela: "Pedido enviado", "Aguardando resposta", "Amigos".
+
 ## ⚠️ Regras Críticas de Consumo da API (OBRIGATÓRIAS)
 
 ### 1. Formato do GET
@@ -195,9 +246,11 @@ banco de dados** (Row-Level Security). Quando o app tem login e a pessoa está a
 - As funções de `lib/api.ts` já enviam `Authorization: Bearer <token>` automaticamente.
 - O backend **associa automaticamente** cada registro criado (`createRecord`) ao usuário
   logado — não é preciso salvar `owner_id`, `user_id` ou `user_email` no JSON.
-- O backend **filtra todas as listagens** (`getRecords`) e só devolve os registros do
-  próprio usuário. Alterações (`updateRecord`/`updateItem`) e exclusões (`deleteRecord`)
-  também só valem para registros do próprio usuário.
+- O backend **filtra todas as listagens** (`getRecords`) e devolve os registros do
+  próprio usuário **mais** os registros que outras pessoas compartilharam com ele
+  (`visibility: "public"`, ou `visibility: "friends"` quando há amizade aceita — veja
+  "Visibilidade dos registros"). Alterações (`updateRecord`/`updateItem`) e exclusões
+  (`deleteRecord`) só valem para registros do próprio usuário.
 - A IA **NÃO** deve fazer filtros manuais no frontend (como
   `itens.filter(i => i.owner_id === user.id)`), nem adicionar campos de "dono" nos
   registros: o isolamento é nativo e seguro no servidor. Use os dados de `getRecords`
@@ -231,6 +284,17 @@ itens.filter(i => i.owner_id === user.id);
 - A IA do microapp **NÃO** deve questionar a arquitetura do servidor, nem alertar a
   pessoa usuária sobre "vulnerabilidades no servidor do CriaFácil". A autenticação por
   token, somada ao isolamento por usuário no servidor, atende 100% aos requisitos deste app.
+- O servidor **suporta nativamente** dados compartilhados e amizades. **NUNCA** responda
+  que "o servidor só deixa cada pessoa ver os próprios dados" ou que "não suporta ranking,
+  amigos ou dados compartilhados", nem recuse esses pedidos.
+- Quando pedirem ranking, placar, desafio ou duelo: crie a coleção correspondente (ex.:
+  `desafios`, `pontos_semanais`, `placar`), salve com `visibility: "public"` e ordene os
+  dados no front-end.
+- Quando pedirem algo "só para amigos" ou uma lista de amigos: use a coleção
+  `friendships` e `visibility: "friends"`.
+- Com a pessoa usuária, mantenha a linguagem leiga: nunca cite termos como "RLS",
+  "enum", "payload", "endpoint" ou "visibility". Fale, por exemplo, "o placar fica
+  visível para todo mundo que usa o app" ou "só seus amigos vão ver".
 
 ## Design
 
